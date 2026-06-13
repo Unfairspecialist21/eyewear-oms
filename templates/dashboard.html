@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %} — Dashboard{% endblock %}
+{% block head %}
+<style>
+  .kanban{display:grid;grid-template-columns:repeat({{ stages|length }},minmax(170px,1fr));gap:0.5rem;overflow-x:auto;padding-bottom:1rem}
+  .col{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:0.6rem;min-height:300px;display:flex;flex-direction:column}
+  .col-header{display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-dim);padding-bottom:0.6rem;border-bottom:1px solid var(--border);margin-bottom:0.6rem}
+  .col-count{background:var(--surface-2);padding:0.1rem 0.4rem;border-radius:3px;font-size:0.65rem;color:var(--text)}
+  .col-cards{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:0.4rem}
+  .col.drag-over{border-color:var(--accent);background:#0d1b2e}
+  .order-card{background:var(--surface-2);border:1px solid var(--border);border-radius:4px;padding:0.55rem;cursor:grab;transition:border-color 0.15s}
+  .order-card:hover{border-color:var(--muted)}
+  .order-card.dragging{opacity:0.5}
+  .oc-id{font-family:var(--mono);font-size:0.68rem;color:var(--text-dim);margin-bottom:0.2rem}
+  .oc-name{font-size:0.78rem;font-weight:500;margin-bottom:0.25rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .oc-spec{font-family:var(--mono);font-size:0.65rem;color:var(--text-dim);margin-bottom:0.35rem}
+  .oc-meta{display:flex;gap:0.3rem;flex-wrap:wrap;align-items:center;justify-content:space-between}
+  .oc-time{font-family:var(--mono);font-size:0.65rem;color:var(--text-dim)}
+</style>
+{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">Operations dashboard</div>
+    <div class="page-meta" style="margin-top:0.2rem">{{ stats.total_active }} active orders · live</div>
+  </div>
+  <a href="{{ url_for('new_order') }}" class="btn btn-primary btn-sm">+ New order</a>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="stat-label">Active</div><div class="stat-value">{{ stats.total_active }}</div></div>
+  <div class="stat"><div class="stat-label">Path A (in-stock)</div><div class="stat-value" style="color:#60a5fa">{{ stats.path_a }}</div></div>
+  <div class="stat"><div class="stat-label">Path B (china)</div><div class="stat-value" style="color:#fbbf24">{{ stats.path_b }}</div></div>
+  <div class="stat"><div class="stat-label">At risk</div><div class="stat-value" style="color:var(--amber)">{{ stats.at_risk }}</div></div>
+  <div class="stat"><div class="stat-label">Breached</div><div class="stat-value" style="color:var(--red)">{{ stats.breached }}</div></div>
+</div>
+
+<div class="kanban">
+  {% for stage in stages %}
+  <div class="col" data-stage="{{ stage }}" ondragover="event.preventDefault();this.classList.add('drag-over')" ondragleave="this.classList.remove('drag-over')" ondrop="drop(event,this)">
+    <div class="col-header">
+      <span>{{ stage.replace('_',' ') }}</span>
+      <span class="col-count">{{ orders_by_stage[stage]|length }}</span>
+    </div>
+    <div class="col-cards">
+      {% for order in orders_by_stage[stage] %}
+      <div class="order-card" draggable="true" data-id="{{ order.id }}" ondragstart="drag(event)" onclick="if(!event.target.classList.contains('order-card')||!event.defaultPrevented)location.href='{{ url_for('view_order', order_id=order.id) }}'">
+        <div class="oc-id">{{ order.order_number }}</div>
+        <div class="oc-name">{{ order.customer_name }}</div>
+        <div class="oc-spec">{{ '%+.2f'|format(order.power_sph) }} · {{ order.index }} · {{ order.coating }}</div>
+        <div class="oc-meta">
+          <span class="badge badge-{{ order.fulfilment_path }}">{{ order.fulfilment_path }}</span>
+          {% if order.is_breached %}
+            <span class="badge badge-breach">BREACH</span>
+          {% elif order.breach_risk >= 60 %}
+            <span class="badge badge-risk-high">{{ order.breach_risk }}%</span>
+          {% elif order.breach_risk >= 30 %}
+            <span class="badge badge-risk-med">{{ order.breach_risk }}%</span>
+          {% endif %}
+          {% if order.hours_remaining is not none %}
+          <span class="oc-time" style="color:{% if order.hours_remaining < 24 %}var(--red){% elif order.hours_remaining < 48 %}var(--amber){% else %}var(--text-dim){% endif %}">
+            {{ order.hours_remaining }}h
+          </span>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<script>
+let dragged = null;
+function drag(e){ dragged = e.currentTarget; e.currentTarget.classList.add('dragging'); }
+document.addEventListener('dragend',e=>{if(dragged)dragged.classList.remove('dragging');});
+function drop(e,col){
+  e.preventDefault(); col.classList.remove('drag-over');
+  if(!dragged) return;
+  const id = parseInt(dragged.dataset.id);
+  const stage = col.dataset.stage;
+  // Move card instantly
+  col.querySelector('.col-cards').prepend(dragged);
+  document.querySelectorAll('.col').forEach(c=>{
+    c.querySelector('.col-count').textContent = c.querySelectorAll('.order-card').length;
+  });
+  dragged.classList.remove('dragging');
+  // Save to server
+  fetch(`/order/${id}/advance`,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({to_stage: stage})
+  }).then(r=>r.json()).then(d=>{
+    if(d.error) alert(d.error);
+  });
+  dragged = null;
+}
+</script>
+{% endblock %}

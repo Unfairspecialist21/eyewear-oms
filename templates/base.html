@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>OMS{% block title %}{% endblock %}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+  :root{
+    --bg:#0a0c0e;--surface:#13161a;--surface-2:#1a1e23;--border:#252a31;
+    --text:#e8eaed;--text-dim:#8b919a;--muted:#5a6068;
+    --accent:#3b82f6;--green:#22c55e;--amber:#f59e0b;--red:#ef4444;--purple:#a855f7;
+    --sans:'IBM Plex Sans',system-ui,sans-serif;
+    --mono:'IBM Plex Mono',monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px;line-height:1.5;min-height:100vh}
+  a{color:inherit;text-decoration:none}
+  /* Top bar */
+  .topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:0.6rem 1.25rem;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+  .brand{font-family:var(--mono);font-size:0.85rem;font-weight:500;letter-spacing:0.04em}
+  .brand-accent{color:var(--accent)}
+  .nav{display:flex;gap:1.5rem}
+  .nav a{font-size:0.82rem;color:var(--text-dim);transition:color 0.15s}
+  .nav a:hover,.nav a.active{color:var(--text)}
+  .nav-meta{font-size:0.75rem;color:var(--text-dim);font-family:var(--mono)}
+  /* Layout */
+  .container{padding:1.25rem}
+  .page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem}
+  .page-title{font-size:1rem;font-weight:500;letter-spacing:0.02em}
+  .page-meta{font-family:var(--mono);font-size:0.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em}
+  /* Buttons */
+  .btn{padding:0.5rem 0.9rem;border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--sans);font-size:0.8rem;cursor:pointer;border-radius:4px;transition:all 0.15s}
+  .btn:hover{border-color:var(--muted)}
+  .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn-primary:hover{background:#2563eb;border-color:#2563eb}
+  .btn-ghost{background:transparent}
+  .btn-sm{padding:0.35rem 0.7rem;font-size:0.75rem}
+  .btn-danger{background:transparent;border-color:#7f1d1d;color:var(--red)}
+  /* Forms */
+  .form-group{margin-bottom:1rem}
+  label{display:block;font-size:0.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.4rem;font-family:var(--mono)}
+  input,select,textarea{width:100%;padding:0.55rem 0.7rem;background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:var(--sans);font-size:0.85rem;border-radius:4px}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+  /* Cards */
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1rem}
+  /* Stats */
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.75rem;margin-bottom:1.25rem}
+  .stat{background:var(--surface);border:1px solid var(--border);padding:0.7rem 1rem;border-radius:6px}
+  .stat-label{font-family:var(--mono);font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em}
+  .stat-value{font-family:var(--mono);font-size:1.3rem;font-weight:500;margin-top:0.2rem;line-height:1}
+  /* Badges */
+  .badge{display:inline-block;padding:0.15rem 0.5rem;font-family:var(--mono);font-size:0.65rem;text-transform:uppercase;letter-spacing:0.06em;border-radius:3px;border:1px solid}
+  .badge-A{border-color:#1e3a5f;background:#0c1f3a;color:#60a5fa}
+  .badge-B{border-color:#5f3a1e;background:#3a1f0c;color:#fbbf24}
+  .badge-risk-low{border-color:#1e5f3a;background:#0c3a1f;color:#4ade80}
+  .badge-risk-med{border-color:#5f4a1e;background:#3a2f0c;color:#fbbf24}
+  .badge-risk-high{border-color:#5f1e1e;background:#3a0c0c;color:#f87171}
+  .badge-breach{border-color:#7f1d1d;background:#3a0c0c;color:#f87171;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.7}}
+  /* Tables */
+  table{width:100%;border-collapse:collapse;font-size:0.82rem}
+  th{background:var(--surface);text-align:left;padding:0.6rem 0.8rem;font-family:var(--mono);font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim);border-bottom:1px solid var(--border);font-weight:400}
+  td{padding:0.6rem 0.8rem;border-bottom:1px solid var(--border)}
+  tr:hover td{background:var(--surface)}
+  /* Flash */
+  .flash{padding:0.7rem 1rem;border-radius:4px;margin-bottom:1rem;font-size:0.85rem;border:1px solid}
+  .flash-success{background:#0c3a1f;border-color:#1e5f3a;color:#4ade80}
+  .flash-error{background:#3a0c0c;border-color:#5f1e1e;color:#f87171}
+  /* Mono helpers */
+  .mono{font-family:var(--mono)}
+  .dim{color:var(--text-dim)}
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+{% if current_user.is_authenticated %}
+<div class="topbar">
+  <div style="display:flex;align-items:center;gap:2.5rem">
+    <div class="brand">EYEWEAR<span class="brand-accent">·</span>OMS</div>
+    <div class="nav">
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('inventory') }}">Inventory</a>
+      <a href="{{ url_for('new_order') }}">New Order</a>
+    </div>
+  </div>
+  <div class="nav-meta">
+    {{ current_user.name }} <span style="color:var(--muted)">·</span> {{ current_user.role }}
+    &nbsp;<a href="{{ url_for('logout') }}" style="color:var(--text-dim)">logout</a>
+  </div>
+</div>
+{% endif %}
+<div class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</div>
+</body>
+</html>

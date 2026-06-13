@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="max-width:380px;margin:8vh auto;text-align:center">
+  <div style="font-family:var(--mono);font-size:1.4rem;font-weight:500;letter-spacing:0.06em;margin-bottom:0.4rem">EYEWEAR<span style="color:var(--accent)">·</span>OMS</div>
+  <div style="font-size:0.78rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:2rem">Order Management System</div>
+  <div class="card" style="text-align:left">
+    <div style="font-family:var(--mono);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim);margin-bottom:1rem">Sign in</div>
+    <form method="POST">
+      <div class="form-group">
+        <label>Email</label>
+        <input type="email" name="email" required autofocus/>
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" name="password" required/>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%">Sign in</button>
+    </form>
+    <div style="margin-top:1rem;font-size:0.78rem;color:var(--text-dim);text-align:center">
+      No account? <a href="{{ url_for('register') }}" style="color:var(--accent)">Register</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

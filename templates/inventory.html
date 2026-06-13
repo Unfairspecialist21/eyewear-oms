@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %} — Inventory{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">Lens inventory</div>
+    <div class="page-meta" style="margin-top:0.2rem">{{ lenses|length }} SKUs · {{ low_stock|length }} below reorder</div>
+  </div>
+  {% if current_user.is_admin or current_user.role == 'admin' %}
+  <button onclick="document.getElementById('add-form').style.display='block'" class="btn btn-primary btn-sm">+ Add lens</button>
+  {% endif %}
+</div>
+
+<div id="add-form" style="display:none" class="card">
+  <div style="font-family:var(--mono);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim);margin-bottom:1rem">Add lens SKU</div>
+  <form method="POST" action="{{ url_for('new_lens') }}">
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:0.5rem">
+      <div class="form-group"><label>SPH</label><input type="number" step="0.25" name="power_sph" required/></div>
+      <div class="form-group"><label>CYL</label><input type="number" step="0.25" name="power_cyl" value="0"/></div>
+      <div class="form-group"><label>Index</label><select name="index"><option>1.50</option><option>1.56</option><option>1.60</option><option>1.67</option><option>1.74</option></select></div>
+      <div class="form-group"><label>Coating</label><select name="coating"><option value="none">None</option><option value="AR">AR</option><option value="blue-cut">Blue-cut</option><option value="photochromic">Photochromic</option></select></div>
+      <div class="form-group"><label>Stock</label><input type="number" name="stock_qty" value="0"/></div>
+      <div class="form-group"><label>Reorder at</label><input type="number" name="reorder_at" value="10"/></div>
+    </div>
+    <button type="submit" class="btn btn-primary btn-sm">Add</button>
+  </form>
+</div>
+
+<table style="margin-top:1rem">
+  <thead><tr>
+    <th>SKU</th><th>SPH</th><th>CYL</th><th>Index</th><th>Coating</th><th>Material</th>
+    <th>Stock</th><th>Reorder at</th><th>Status</th>
+  </tr></thead>
+  <tbody>
+  {% for lens in lenses %}
+  <tr {% if lens.stock_qty <= lens.reorder_at %}style="background:#3a0c0c30"{% endif %}>
+    <td class="mono dim">{{ lens.sku }}</td>
+    <td class="mono">{{ '%+.2f'|format(lens.power_sph) }}</td>
+    <td class="mono">{{ lens.power_cyl }}</td>
+    <td class="mono">{{ lens.index }}</td>
+    <td>{{ lens.coating }}</td>
+    <td>{{ lens.material }}</td>
+    <td class="mono" style="font-weight:500">{{ lens.stock_qty }}</td>
+    <td class="mono dim">{{ lens.reorder_at }}</td>
+    <td>
+      {% if lens.stock_qty == 0 %}
+        <span class="badge badge-risk-high">OUT</span>
+      {% elif lens.stock_qty <= lens.reorder_at %}
+        <span class="badge badge-risk-med">LOW</span>
+      {% else %}
+        <span class="badge badge-risk-low">OK</span>
+      {% endif %}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--text-dim)">No lens SKUs yet. Click "+ Add lens" to start.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
