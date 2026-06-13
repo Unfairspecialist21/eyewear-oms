@@ -357,8 +357,8 @@ def seed_database_once():
     from werkzeug.security import generate_password_hash
     
     # Only allow if database is empty (safety check)
-    if User.query.count() > 0:
-        return f'Database already has data: {User.query.count()} users, {Order.query.count()} orders. Refusing to re-seed.'
+    if Order.query.count() > 0:
+    return f'Orders already exist: {Order.query.count()}. Refusing to re-seed.'
     
     # Import and run seeder logic inline
     import random
