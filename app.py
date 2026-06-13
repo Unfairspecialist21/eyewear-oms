@@ -351,6 +351,146 @@ def new_lens():
     db.session.commit()
     flash(f'Added lens {lens.sku}', 'success')
     return redirect(url_for('inventory'))
+@app.route('/admin/seed-database-once')
+def seed_database_once():
+    """One-time seed endpoint. Delete after running."""
+    from werkzeug.security import generate_password_hash
+    
+    # Only allow if database is empty (safety check)
+    if User.query.count() > 0:
+        return f'Database already has data: {User.query.count()} users, {Order.query.count()} orders. Refusing to re-seed.'
+    
+    # Import and run seeder logic inline
+    import random
+    random.seed(42)
+    
+    LENS_POWERS = [round(x * 0.25, 2) for x in range(-32, 33)]
+    COMMON_POWERS = [-2.00, -1.50, -1.00, -0.50, +0.50, +1.00, +1.50, +2.00, +2.50, -2.50, -3.00]
+    COMMON_INDEXES = [1.50, 1.56, 1.60]
+    COMMON_COATINGS = ['none', 'AR', 'blue-cut']
+    FRAME_MODELS = ['Lumio Aria', 'Lumio Steel', 'Lumio Verve', 'Lumio Pulse', 'Lumio Noir', 'Lumio Crest']
+    STORE_LOCATIONS = ['Bangalore HQ', 'Mumbai', 'Delhi', 'Chennai', 'Hyderabad']
+    SOURCES = ['website', 'store', 'marketplace']
+    
+    # Create admin
+    admin = User(name='Demo Admin', email='admin@lumio.app',
+                 password=generate_password_hash('lumio123'),
+                 role='admin', is_admin=True)
+    db.session.add(admin)
+    
+    # Create lenses
+    for power in COMMON_POWERS:
+        for idx in COMMON_INDEXES:
+            for coat in COMMON_COATINGS:
+                lens = Lens(power_sph=power, power_cyl=0.0, index=idx, coating=coat,
+                            material='CR-39' if idx <= 1.56 else 'poly',
+                            lens_type='single-vision',
+                            stock_qty=random.randint(15, 80),
+                            reorder_at=10, supplier='Supplier-A',
+                            lead_time=random.choice([7, 9, 11]))
+                db.session.add(lens)
+    
+    rare_combos = [(-4.00, 1.74, 'photochromic'), (-5.50, 1.67, 'AR'),
+                   (+4.00, 1.67, 'photochromic'), (-6.00, 1.74, 'blue-cut'),
+                   (-7.00, 1.74, 'AR'), (+5.00, 1.74, 'photochromic')]
+    for power, idx, coat in rare_combos:
+        lens = Lens(power_sph=power, power_cyl=0.0, index=idx, coating=coat,
+                    material='high-index', lens_type='single-vision',
+                    stock_qty=random.randint(0, 5), reorder_at=5,
+                    supplier='Supplier-Premium', lead_time=14)
+        db.session.add(lens)
+    db.session.commit()
+    
+    # Create historical orders
+    lenses = Lens.query.all()
+    now = datetime.utcnow()
+    
+    def stage_duration(stage, idx, coating, material):
+        base = {'placed':0.1,'verified':2,'sourcing':8,'cutting':3,'coating':5,
+                'qc1':0.5,'fitting':2,'qc2':0.5,'shipped':12,'delivered':24}[stage]
+        if stage in ['cutting','coating']:
+            if idx >= 1.67: base *= 1.6
+            if coating == 'photochromic': base *= 1.4
+        return base * random.uniform(0.7, 1.5)
+    
+    # 500 historical
+    for i in range(500):
+        placed = now - timedelta(hours=random.uniform(0, 90*24))
+        lens = random.choice(lenses)
+        path = 'A' if lens.stock_qty > 0 else 'B'
+        order = Order(
+            order_number=f"ORD-HIST-{i+1:05d}",
+            source=random.choice(SOURCES), store_location=random.choice(STORE_LOCATIONS),
+            customer_name=f"Customer {i+1}", customer_phone=f"+9198{random.randint(10000000,99999999)}",
+            customer_email=f"customer{i+1}@example.com",
+            power_sph=lens.power_sph, power_cyl=lens.power_cyl, index=lens.index,
+            coating=lens.coating, material=lens.material, lens_type=lens.lens_type,
+            frame_model=random.choice(FRAME_MODELS), fulfilment_path=path,
+            matched_lens_id=lens.id if lens.stock_qty > 0 else None,
+            current_stage='delivered', placed_at=placed,
+            promised_at=placed + timedelta(hours=5*24 if path=='A' else 14*24)
+        )
+        db.session.add(order)
+        db.session.flush()
+        stage_time = placed
+        prev = None
+        for stage in STAGES:
+            d = stage_duration(stage, lens.index, lens.coating, lens.material)
+            if stage == 'sourcing' and path == 'B':
+                d = lens.lead_time * 24 * random.uniform(0.9, 1.3)
+            if stage == 'qc1' and random.random() < 0.05:
+                d += random.uniform(24, 72)
+            t = StageTransition(order_id=order.id, from_stage=prev, to_stage=stage,
+                                transitioned_at=stage_time + timedelta(hours=d), notes='Seeded')
+            db.session.add(t)
+            stage_time = stage_time + timedelta(hours=d)
+            prev = stage
+        order.delivered_at = stage_time
+        if (i+1) % 50 == 0:
+            db.session.commit()
+    db.session.commit()
+    
+    # 25 active orders
+    stage_weights = {'placed':1,'verified':2,'sourcing':4,'cutting':5,'coating':4,
+                     'qc1':2,'fitting':3,'qc2':2,'shipped':2}
+    stage_choices = []
+    for s, w in stage_weights.items():
+        stage_choices.extend([s]*w)
+    for i in range(25):
+        lens = random.choice(lenses)
+        path = 'A' if lens.stock_qty > 0 else 'B'
+        current = random.choice(stage_choices)
+        idx = STAGES.index(current)
+        placed = now - timedelta(days=random.uniform(idx*0.3, idx*0.7+1))
+        order = Order(
+            order_number=f"ORD-{now.strftime('%Y%m%d')}-{(i+1):04d}",
+            source=random.choice(SOURCES), store_location=random.choice(STORE_LOCATIONS),
+            customer_name=f"Active Customer {i+1}",
+            customer_phone=f"+9198{random.randint(10000000,99999999)}",
+            customer_email=f"active{i+1}@example.com",
+            power_sph=lens.power_sph, power_cyl=lens.power_cyl, index=lens.index,
+            coating=lens.coating, material=lens.material, lens_type=lens.lens_type,
+            frame_model=random.choice(FRAME_MODELS), fulfilment_path=path,
+            matched_lens_id=lens.id if lens.stock_qty > 0 else None,
+            current_stage=current, placed_at=placed,
+            promised_at=placed + timedelta(hours=5*24 if path=='A' else 14*24)
+        )
+        db.session.add(order)
+        db.session.flush()
+        stage_time = placed
+        prev = None
+        for s in STAGES[:idx+1]:
+            d = stage_duration(s, lens.index, lens.coating, lens.material)
+            if s == 'sourcing' and path == 'B':
+                d = lens.lead_time * 24 * random.uniform(0.9, 1.3)
+            t = StageTransition(order_id=order.id, from_stage=prev, to_stage=s,
+                                transitioned_at=stage_time + timedelta(hours=d), notes='Seeded')
+            db.session.add(t)
+            stage_time = stage_time + timedelta(hours=d)
+            prev = s
+    db.session.commit()
+    
+    return f'✓ Seeded. Users: {User.query.count()}, Lenses: {Lens.query.count()}, Orders: {Order.query.count()}, Transitions: {StageTransition.query.count()}. Visit /dashboard now.'     
 
 # ─── Init ──────────────────────────────────────────────────────────────────────
 
