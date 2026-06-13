@@ -360,20 +360,51 @@ def new_lens():
 @app.route('/admin/train-model')
 @login_required
 def train_model_endpoint():
-    """Train ML model on current historical orders. Run after seed."""
     if not current_user.is_admin:
         return 'Admin only', 403
     try:
-        from scripts.train_model import train
-        result = train()
-        if result:
-            return f'✓ Model trained successfully. Visit /dashboard to see predictions.'
-        return '⚠ Not enough data to train. Need at least 100 historical orders.'
+        import os, pickle
+        import pandas as pd
+        from sklearn.ensemble import RandomForestClassifier
+        
+        # Build dataset inline so it shares app context
+        rows = []
+        delivered = Order.query.filter_by(current_stage='delivered').all()
+        for order in delivered:
+            sla_h = SLA_HOURS.get(order.fulfilment_path, 120)
+            actual = (order.delivered_at - order.placed_at).total_seconds() / 3600 if order.delivered_at else None
+            if actual is None: continue
+            breached = 1 if actual > sla_h else 0
+            transitions = StageTransition.query.filter_by(order_id=order.id).order_by(StageTransition.transitioned_at).all()
+            if len(transitions) < 2: continue
+            for t in transitions[:-1]:
+                rows.append({
+                    'power_sph_abs': abs(order.power_sph),
+                    'index_v': order.index,
+                    'is_premium_lens': 1 if order.index >= 1.67 else 0,
+                    'is_photochromic': 1 if order.coating == 'photochromic' else 0,
+                    'path_b': 1 if order.fulfilment_path == 'B' else 0,
+                    'stage_int': STAGES.index(t.to_stage) if t.to_stage in STAGES else 0,
+                    'day_of_week': order.placed_at.weekday(),
+                    'label': breached
+                })
+        
+        if len(rows) < 100:
+            return f'Only {len(rows)} training rows. Need 100+.'
+        
+        df = pd.DataFrame(rows)
+        X = df.drop('label', axis=1)
+        y = df['label']
+        
+        model = RandomForestClassifier(n_estimators=100, max_depth=10, class_weight='balanced', random_state=42)
+        model.fit(X, y)
+        
+        with open('/tmp/lumio_model.pkl', 'wb') as f:
+            pickle.dump({'model': model, 'features': list(X.columns)}, f)
+        
+        return f'✓ Trained on {len(rows)} rows. Model saved.'
     except Exception as e:
         return f'Training error: {str(e)}'
-
-@app.route('/admin/refresh-predictions')
-@login_required
 def refresh_predictions():
     """Recalculate breach_risk for all active orders using current model."""
     if not current_user.is_admin:
