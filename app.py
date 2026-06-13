@@ -358,7 +358,7 @@ def seed_database_once():
     
     # Only allow if database is empty (safety check)
     if Order.query.count() > 0:
-    return f'Orders already exist: {Order.query.count()}. Refusing to re-seed.'
+        return f'Orders already exist: {Order.query.count()}. Refusing to re-seed.'
     
     # Import and run seeder logic inline
     import random
