@@ -797,7 +797,15 @@ def order_risk(order_id):
     order.breach_risk = risk
     db.session.commit()
     return jsonify({'risk': risk, 'reasons': reasons})
-
+@app.route('/admin/set-my-phone/<phone>')
+@login_required
+def set_my_phone(phone):
+    if not phone.startswith('+'):
+        return 'Phone must start with + and country code (e.g. +919876543210)'
+    current_user.phone = phone
+    db.session.commit()
+    return f'✓ Your phone set to {phone}. WhatsApp alerts will go here.'
+    
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
