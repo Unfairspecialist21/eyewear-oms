@@ -1,10 +1,16 @@
 {% extends "base.html" %}
 {% block title %} — Inventory{% endblock %}
+{% block head %}
+<style>
+  .filter-bar{display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;align-items:center}
+  .filter-bar select,.filter-bar input{padding:0.4rem 0.6rem;font-size:0.78rem;width:auto;min-width:120px}
+</style>
+{% endblock %}
 {% block content %}
 <div class="page-header">
   <div>
     <div class="page-title">Lens inventory</div>
-    <div class="page-meta" style="margin-top:0.2rem">{{ lenses|length }} SKUs · {{ low_stock|length }} below reorder</div>
+    <div class="page-meta">{{ lenses|length }} SKUs · {{ low_stock|length }} below reorder</div>
   </div>
   <div style="display:flex;gap:0.5rem">
     <a href="{{ url_for('restocking_ui') }}" class="btn btn-ghost btn-sm">✦ AI Restocking</a>
@@ -14,8 +20,43 @@
   </div>
 </div>
 
-<div id="add-form" style="display:none" class="card">
-  <div style="font-family:var(--mono);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim);margin-bottom:1rem">Add lens SKU</div>
+<form method="GET" class="filter-bar">
+  <input type="text" name="q" placeholder="Search SKU..." value="{{ q }}"/>
+  <select name="index">
+    <option value="">All indexes</option>
+    {% for i in ['1.50','1.56','1.60','1.67','1.74'] %}
+    <option value="{{ i }}" {% if f_index == i %}selected{% endif %}>{{ i }}</option>
+    {% endfor %}
+  </select>
+  <select name="coating">
+    <option value="">All coatings</option>
+    {% for c in ['none','AR','blue-cut','photochromic'] %}
+    <option value="{{ c }}" {% if f_coating == c %}selected{% endif %}>{{ c }}</option>
+    {% endfor %}
+  </select>
+  <select name="material">
+    <option value="">All materials</option>
+    {% for m in ['CR-39','poly','trivex','high-index'] %}
+    <option value="{{ m }}" {% if f_material == m %}selected{% endif %}>{{ m }}</option>
+    {% endfor %}
+  </select>
+  <select name="status">
+    <option value="">Any stock</option>
+    <option value="out" {% if f_status == 'out' %}selected{% endif %}>Out of stock</option>
+    <option value="low" {% if f_status == 'low' %}selected{% endif %}>Low</option>
+    <option value="ok" {% if f_status == 'ok' %}selected{% endif %}>OK</option>
+  </select>
+  <select name="sort">
+    <option value="power" {% if sort == 'power' %}selected{% endif %}>Sort: Power</option>
+    <option value="stock_asc" {% if sort == 'stock_asc' %}selected{% endif %}>Sort: Stock ↑</option>
+    <option value="stock_desc" {% if sort == 'stock_desc' %}selected{% endif %}>Sort: Stock ↓</option>
+  </select>
+  <button class="btn btn-sm">Filter</button>
+  <a href="{{ url_for('inventory') }}" class="btn btn-ghost btn-sm">Clear</a>
+</form>
+
+<div id="add-form" style="display:none" class="card" style="margin-bottom:1rem">
+  <div class="section-title">Add lens SKU</div>
   <form method="POST" action="{{ url_for('new_lens') }}">
     <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:0.5rem">
       <div class="form-group"><label>SPH</label><input type="number" step="0.25" name="power_sph" required/></div>
@@ -29,14 +70,14 @@
   </form>
 </div>
 
-<table style="margin-top:1rem">
+<table>
   <thead><tr>
     <th>SKU</th><th>SPH</th><th>CYL</th><th>Index</th><th>Coating</th><th>Material</th>
     <th>Stock</th><th>Reorder at</th><th>Status</th>
   </tr></thead>
   <tbody>
   {% for lens in lenses %}
-  <tr {% if lens.stock_qty <= lens.reorder_at %}style="background:#3a0c0c30"{% endif %}>
+  <tr>
     <td class="mono dim">{{ lens.sku }}</td>
     <td class="mono">{{ '%+.2f'|format(lens.power_sph) }}</td>
     <td class="mono">{{ lens.power_cyl }}</td>
@@ -46,17 +87,13 @@
     <td class="mono" style="font-weight:500">{{ lens.stock_qty }}</td>
     <td class="mono dim">{{ lens.reorder_at }}</td>
     <td>
-      {% if lens.stock_qty == 0 %}
-        <span class="badge badge-risk-high">OUT</span>
-      {% elif lens.stock_qty <= lens.reorder_at %}
-        <span class="badge badge-risk-med">LOW</span>
-      {% else %}
-        <span class="badge badge-risk-low">OK</span>
-      {% endif %}
+      {% if lens.stock_qty == 0 %}<span class="badge b-risk-high">OUT</span>
+      {% elif lens.stock_qty <= lens.reorder_at %}<span class="badge b-risk-med">LOW</span>
+      {% else %}<span class="badge b-risk-low">OK</span>{% endif %}
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--text-dim)">No lens SKUs yet. Click "+ Add lens" to start.</td></tr>
+  <tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--text-dim)">No lenses match these filters.</td></tr>
   {% endfor %}
   </tbody>
 </table>

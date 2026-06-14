@@ -28,7 +28,7 @@ STAGES = ['placed', 'verified', 'sourcing', 'cutting', 'coating', 'qc1', 'fittin
 STAGE_ROLES = {
     'placed':    'system',
     'verified':  'system',
-    'sourcing':  'system',
+    'sourcing':  'ops',     # warehouse confirms lens pulled (Path A) or supplier arrival (Path B)
     'cutting':   'lab',
     'coating':   'lab',
     'qc1':       'qc',
@@ -310,17 +310,13 @@ def new_order():
         log_transition(order, None, 'placed')
         log_transition(order, 'placed', 'verified', notes='Auto-verified by system')
 
-        # Auto-decide sourcing path
+        # Both paths land in 'sourcing' — warehouse confirms next step
+        order.current_stage = 'sourcing'
         if path == 'A':
-            order.current_stage = 'sourcing'
-            log_transition(order, 'verified', 'sourcing', notes=f'In-stock lens matched: SKU {matched.sku}')
+            log_transition(order, 'verified', 'sourcing', notes=f'In-stock lens matched: SKU {matched.sku}. Awaiting warehouse confirmation.')
             matched.stock_qty -= 1
-            # In-stock → can move to cutting immediately
-            order.current_stage = 'cutting'
-            log_transition(order, 'sourcing', 'cutting', notes='In-stock lens available')
         else:
-            order.current_stage = 'sourcing'
-            log_transition(order, 'verified', 'sourcing', notes='Out of stock — ordering from China')
+            log_transition(order, 'verified', 'sourcing', notes='Out of stock — supplier order required.')
 
         db.session.commit()
         flash(f'Order {order.order_number} placed! Path {path}, promised by {order.promised_at.strftime("%d %b")}.', 'success')
@@ -383,9 +379,42 @@ def advance_stage(order_id):
 @app.route('/inventory')
 @login_required
 def inventory():
-    lenses = Lens.query.order_by(Lens.power_sph, Lens.index).all()
+    q          = request.args.get('q', '').strip().lower()
+    f_index    = request.args.get('index', '')
+    f_coating  = request.args.get('coating', '')
+    f_material = request.args.get('material', '')
+    f_status   = request.args.get('status', '')
+    sort       = request.args.get('sort', 'power')
+
+    query = Lens.query
+    if f_index:    query = query.filter(Lens.index == float(f_index))
+    if f_coating:  query = query.filter(Lens.coating == f_coating)
+    if f_material: query = query.filter(Lens.material == f_material)
+
+    lenses = query.all()
+
+    if q:
+        lenses = [l for l in lenses if q in l.sku.lower()]
+    if f_status == 'out':
+        lenses = [l for l in lenses if l.stock_qty == 0]
+    elif f_status == 'low':
+        lenses = [l for l in lenses if 0 < l.stock_qty <= l.reorder_at]
+    elif f_status == 'ok':
+        lenses = [l for l in lenses if l.stock_qty > l.reorder_at]
+
+    if sort == 'stock_asc':
+        lenses = sorted(lenses, key=lambda l: l.stock_qty)
+    elif sort == 'stock_desc':
+        lenses = sorted(lenses, key=lambda l: -l.stock_qty)
+    else:
+        lenses = sorted(lenses, key=lambda l: (l.power_sph, l.index))
+
     low_stock = [l for l in lenses if l.stock_qty <= l.reorder_at]
-    return render_template('inventory.html', lenses=lenses, low_stock=low_stock)
+    return render_template('inventory.html',
+        lenses=lenses, low_stock=low_stock,
+        q=q, f_index=f_index, f_coating=f_coating, f_material=f_material,
+        f_status=f_status, sort=sort
+    )
 
 @app.route('/inventory/new', methods=['POST'])
 @login_required
