@@ -269,6 +269,141 @@ def dashboard():
         filtered_orders=filtered, active_stage=active_stage
     )
 
+
+@app.route('/metrics')
+@login_required
+def metrics():
+    """Operational metrics page — daily/weekly view."""
+    now = datetime.utcnow()
+    today_start = datetime.combine(now.date(), datetime.min.time())
+    week_start = today_start - timedelta(days=7)
+    month_start = today_start - timedelta(days=30)
+
+    # Today
+    today_orders = Order.query.filter(Order.placed_at >= today_start).count()
+
+    # This week
+    week_orders = Order.query.filter(Order.placed_at >= week_start).count()
+    week_delivered = Order.query.filter(
+        Order.delivered_at >= week_start,
+        Order.current_stage == 'delivered'
+    ).all()
+    week_breached = sum(1 for o in week_delivered if o.delivered_at and o.delivered_at > o.promised_at)
+    week_breach_rate = int((week_breached / len(week_delivered) * 100)) if week_delivered else 0
+
+    # Average fulfilment time (last 30 days)
+    month_delivered = Order.query.filter(
+        Order.delivered_at >= month_start,
+        Order.current_stage == 'delivered'
+    ).all()
+    if month_delivered:
+        durations = [(o.delivered_at - o.placed_at).total_seconds() / 3600 for o in month_delivered if o.delivered_at]
+        avg_hours = sum(durations) / len(durations) if durations else 0
+        avg_days = avg_hours / 24
+    else:
+        avg_days = 0
+
+    # Current at-risk
+    active = Order.query.filter(Order.current_stage != 'delivered').all()
+    at_risk_now = sum(1 for o in active if o.breach_risk >= 60)
+
+    # Top SKUs (by demand last 30 days)
+    from collections import Counter
+    recent = Order.query.filter(Order.placed_at >= month_start).all()
+    sku_counter = Counter()
+    for o in recent:
+        sku = f"{o.power_sph:+.2f} / {o.index} / {o.coating}"
+        sku_counter[sku] += 1
+    top_skus = sku_counter.most_common(8)
+
+    # Stage distribution (active)
+    stage_dist = {s: 0 for s in STAGES if s != 'delivered'}
+    for o in active:
+        stage_dist[o.current_stage] = stage_dist.get(o.current_stage, 0) + 1
+
+    # Path distribution
+    path_a = sum(1 for o in active if o.fulfilment_path == 'A')
+    path_b = sum(1 for o in active if o.fulfilment_path == 'B')
+
+    return render_template('metrics.html',
+        today_orders=today_orders, week_orders=week_orders,
+        week_delivered_count=len(week_delivered), week_breach_rate=week_breach_rate,
+        avg_days=round(avg_days, 1), at_risk_now=at_risk_now,
+        top_skus=top_skus, stage_dist=stage_dist,
+        path_a=path_a, path_b=path_b, total_active=len(active)
+    )
+
+
+@app.route('/api/v1/orders', methods=['POST'])
+def api_create_order():
+    """External API for marketplace/storefront integrations.
+    Expects JSON: {customer_name, customer_phone, customer_email, source,
+                   store_location, power_sph, power_cyl, index, coating,
+                   material, lens_type, frame_model}
+    Returns: {order_id, order_number, fulfilment_path, promised_at, hours_to_delivery}
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'JSON body required'}), 400
+
+        required = ['customer_name', 'power_sph', 'index']
+        missing = [f for f in required if f not in data]
+        if missing:
+            return jsonify({'error': f'Missing fields: {missing}'}), 400
+
+        power_sph = float(data['power_sph'])
+        power_cyl = float(data.get('power_cyl', 0))
+        index = float(data['index'])
+        coating = data.get('coating', 'none')
+        material = data.get('material', 'CR-39')
+
+        matched = find_matching_lens(power_sph, power_cyl, index, coating, material)
+        path = 'A' if matched else 'B'
+
+        order = Order(
+            order_number    = generate_order_number(),
+            source          = data.get('source', 'marketplace'),
+            store_location  = data.get('store_location', 'Online'),
+            customer_name   = data['customer_name'],
+            customer_phone  = data.get('customer_phone', ''),
+            customer_email  = data.get('customer_email', ''),
+            power_sph       = power_sph,
+            power_cyl       = power_cyl,
+            index           = index,
+            coating         = coating,
+            material        = material,
+            lens_type       = data.get('lens_type', 'single-vision'),
+            frame_model     = data.get('frame_model', ''),
+            fulfilment_path = path,
+            matched_lens_id = matched.id if matched else None,
+            current_stage   = 'sourcing',
+            promised_at     = calculate_promised_date(path),
+        )
+        db.session.add(order)
+        db.session.flush()
+
+        log_transition(order, None, 'placed', notes='Via API')
+        log_transition(order, 'placed', 'verified', notes='Auto-verified')
+        if matched:
+            matched.stock_qty -= 1
+            log_transition(order, 'verified', 'sourcing', notes=f'In-stock match: SKU {matched.sku}')
+        else:
+            log_transition(order, 'verified', 'sourcing', notes='Supplier order required')
+
+        db.session.commit()
+
+        return jsonify({
+            'order_id':         order.id,
+            'order_number':     order.order_number,
+            'fulfilment_path':  'in-stock' if path == 'A' else 'sourced',
+            'promised_at':      order.promised_at.isoformat(),
+            'hours_to_delivery': SLA_HOURS[path],
+            'tracking_url':     f'/order/{order.id}'
+        }), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # ─── Order intake (public form) ────────────────────────────────────────────────
 
 @app.route('/order/new', methods=['GET', 'POST'])
@@ -355,6 +490,14 @@ def advance_stage(order_id):
             return jsonify({'error': 'Rollback requires a reason'}), 400
         # Reset SLA — push promised date forward
         order.promised_at = datetime.utcnow() + timedelta(hours=SLA_HOURS[order.fulfilment_path] * 0.5)
+        # Notify customer via WhatsApp
+        if order.customer_phone:
+            msg = (
+                f"Hi {order.customer_name}, your Lumio order {order.order_number} has had a minor "
+                f"setback in quality control. We've updated your new expected delivery to "
+                f"{order.promised_at.strftime('%d %b')}. We apologise for the inconvenience."
+            )
+            send_whatsapp(order.customer_phone, msg)
     else:
         # Forward — role check
         required_role = STAGE_ROLES.get(order.current_stage)
@@ -557,10 +700,12 @@ def train_model_endpoint():
         return f'Training error: {type(e).__name__}: {str(e)}'
 
 @app.route('/admin/refresh-predictions')
-@login_required
 def refresh_predictions():
-    if not current_user.is_admin:
-        return 'Admin only', 403
+    # Allow access via secret token for cron jobs, OR logged-in admin
+    token = request.args.get('key', '')
+    if token != 'lumio-cron-2026-secret':
+        if not current_user.is_authenticated or not current_user.is_admin:
+            return 'Unauthorized', 403
     active = Order.query.filter(Order.current_stage != 'delivered').all()
     high_risk = []
     for order in active:
