@@ -17,6 +17,26 @@
   </div>
 </div>
 
+
+<!-- Visual stage stepper -->
+<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.25rem;margin-bottom:1rem">
+  <div class="section-title">Order journey</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;overflow-x:auto;padding:0.5rem 0">
+    {% set cur_idx = stages.index(order.current_stage) %}
+    {% for stage in stages %}
+    {% set passed = loop.index0 < cur_idx %}
+    {% set current = loop.index0 == cur_idx %}
+    <div style="display:flex;flex-direction:column;align-items:center;min-width:70px;text-align:center">
+      <div style="width:24px;height:24px;border-radius:50%;border:2px solid {% if passed %}var(--green){% elif current %}var(--accent){% else %}var(--border){% endif %};background:{% if passed %}var(--green){% elif current %}var(--accent){% else %}var(--surface){% endif %};display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.7rem;font-family:'IBM Plex Mono',monospace;font-weight:500">{% if passed %}✓{% elif current %}●{% else %}{{ loop.index }}{% endif %}</div>
+      <div style="font-size:0.65rem;font-family:'IBM Plex Mono',monospace;color:{% if passed %}var(--text){% elif current %}var(--accent){% else %}var(--text-dim){% endif %};margin-top:0.4rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:{% if current %}500{% else %}400{% endif %}">{{ stage|replace('_',' ') }}</div>
+    </div>
+    {% if not loop.last %}
+    <div style="flex:1;height:2px;background:{% if loop.index0 < cur_idx %}var(--green){% else %}var(--border){% endif %};margin:0 0.3rem;margin-bottom:1.6rem;min-width:15px"></div>
+    {% endif %}
+    {% endfor %}
+  </div>
+</div>
+
 <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:1rem">
   <div class="card">
     <div class="section-title">Details</div>

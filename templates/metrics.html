@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %} — Metrics{% endblock %}
+{% block head %}
+<style>
+  .metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0.75rem;margin-bottom:2rem}
+  .metric-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.2rem}
+  .m-label{font-family:'IBM Plex Mono',monospace;font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem}
+  .m-value{font-family:'IBM Plex Mono',monospace;font-size:1.8rem;font-weight:500;line-height:1}
+  .m-sub{font-size:0.72rem;color:var(--text-dim);margin-top:0.3rem;font-family:'IBM Plex Mono',monospace}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem;margin-bottom:1rem}
+  .stage-bar{display:flex;align-items:center;gap:0.6rem;padding:0.45rem 0;font-size:0.85rem}
+  .stage-bar-name{font-family:'IBM Plex Mono',monospace;font-size:0.78rem;width:90px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em}
+  .stage-bar-track{flex:1;height:18px;background:var(--surface-2);border-radius:3px;overflow:hidden;position:relative}
+  .stage-bar-fill{height:100%;background:var(--accent);transition:width 0.3s}
+  .stage-bar-count{font-family:'IBM Plex Mono',monospace;font-size:0.85rem;font-weight:500;width:30px;text-align:right}
+  .sku-row{display:flex;justify-content:space-between;padding:0.5rem 0;border-bottom:1px solid var(--border);font-size:0.85rem}
+  .sku-row:last-child{border-bottom:none}
+</style>
+{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">Operational metrics</div>
+    <div class="page-meta">Performance overview · last 30 days</div>
+  </div>
+  <a href="{{ url_for('dashboard') }}" class="btn btn-ghost btn-sm">← Dashboard</a>
+</div>
+
+<div class="metrics-grid">
+  <div class="metric-card">
+    <div class="m-label">Orders today</div>
+    <div class="m-value">{{ today_orders }}</div>
+    <div class="m-sub">since midnight UTC</div>
+  </div>
+  <div class="metric-card">
+    <div class="m-label">Orders this week</div>
+    <div class="m-value">{{ week_orders }}</div>
+    <div class="m-sub">{{ week_delivered_count }} delivered</div>
+  </div>
+  <div class="metric-card">
+    <div class="m-label">Breach rate (7d)</div>
+    <div class="m-value" style="color:{% if week_breach_rate >= 30 %}var(--red){% elif week_breach_rate >= 15 %}var(--amber){% else %}var(--green){% endif %}">{{ week_breach_rate }}%</div>
+    <div class="m-sub">of delivered orders</div>
+  </div>
+  <div class="metric-card">
+    <div class="m-label">Avg fulfilment time</div>
+    <div class="m-value">{{ avg_days }}d</div>
+    <div class="m-sub">last 30 days</div>
+  </div>
+  <div class="metric-card">
+    <div class="m-label">At risk right now</div>
+    <div class="m-value" style="color:{% if at_risk_now > 0 %}var(--amber){% else %}var(--green){% endif %}">{{ at_risk_now }}</div>
+    <div class="m-sub">≥60% breach probability</div>
+  </div>
+  <div class="metric-card">
+    <div class="m-label">Active orders</div>
+    <div class="m-value">{{ total_active }}</div>
+    <div class="m-sub">{{ path_a }} in-stock · {{ path_b }} sourced</div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+  <div class="panel">
+    <div class="section-title">Stage distribution (active)</div>
+    {% set max_count = stage_dist.values()|list|max %}
+    {% for stage, count in stage_dist.items() %}
+    <div class="stage-bar">
+      <div class="stage-bar-name">{{ stage|replace('_',' ') }}</div>
+      <div class="stage-bar-track">
+        {% if max_count > 0 and count > 0 %}
+        <div class="stage-bar-fill" style="width:{{ (count / max_count * 100)|round|int }}%"></div>
+        {% endif %}
+      </div>
+      <div class="stage-bar-count">{{ count }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="panel">
+    <div class="section-title">Top SKUs (last 30 days)</div>
+    {% if top_skus %}
+    {% for sku, count in top_skus %}
+    <div class="sku-row">
+      <span class="mono dim">{{ sku }}</span>
+      <span class="mono" style="font-weight:500">{{ count }} orders</span>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div style="color:var(--text-dim);padding:0.8rem 0;font-size:0.85rem">No orders in the last 30 days.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
