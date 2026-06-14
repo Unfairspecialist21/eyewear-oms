@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %} — Users{% endblock %}
+{% block head %}
+<style>
+  .user-row{display:grid;grid-template-columns:1.5fr 2fr 2fr 1fr 80px;gap:0.75rem;align-items:center;padding:0.7rem 0.9rem;border-bottom:1px solid var(--border);font-size:0.85rem}
+  .user-row:hover{background:var(--surface-2)}
+  .role-badge{display:inline-block;padding:0.15rem 0.5rem;font-family:'IBM Plex Mono',monospace;font-size:0.62rem;text-transform:uppercase;letter-spacing:0.06em;border-radius:3px;border:1px solid;margin-right:0.25rem}
+  .role-admin{border-color:#7a2f2f;background:#3b1212;color:#ff8585}
+  .role-ops{border-color:#2a4a78;background:#13294a;color:#7bb3ff}
+  .role-lab{border-color:#2a5e7a;background:#13354a;color:#7bccff}
+  .role-qc{border-color:#7a5e2a;background:#3b2d10;color:#ffc870}
+  .role-dispatch{border-color:#2f5a3a;background:#1a3a25;color:#5fd47e}
+  [data-theme="light"] .role-admin{border-color:#c49191;background:#f9e3e3;color:#8a2a2a}
+  [data-theme="light"] .role-ops{border-color:#9bb8e0;background:#e8f0fc;color:#1e5fab}
+  [data-theme="light"] .role-lab{border-color:#9bcce0;background:#e8f5fc;color:#1e6aab}
+  [data-theme="light"] .role-qc{border-color:#c4a87a;background:#f9eed8;color:#8a5d18}
+  [data-theme="light"] .role-dispatch{border-color:#9ec491;background:#e8f3e3;color:#3d6a2a}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:1rem;margin-bottom:1rem}
+  .role-checkbox{display:inline-flex;align-items:center;gap:0.3rem;margin-right:0.75rem;font-size:0.82rem}
+  .role-checkbox input{width:auto;margin:0}
+</style>
+{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">Team management</div>
+    <div class="page-meta">{{ users|length }} users · role-based WhatsApp alerts</div>
+  </div>
+  <button class="btn btn-primary btn-sm" onclick="document.getElementById('new-form').style.display='block'">+ New user</button>
+</div>
+
+<div id="new-form" style="display:none" class="panel">
+  <div class="section-title">Add new user</div>
+  <form method="POST" action="{{ url_for('new_user') }}">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0.5rem">
+      <div class="form-group"><label>Name</label><input name="name" required/></div>
+      <div class="form-group"><label>Email</label><input type="email" name="email" required/></div>
+      <div class="form-group"><label>Phone (+91...)</label><input name="phone"/></div>
+      <div class="form-group"><label>Password</label><input name="password" value="lumio123"/></div>
+    </div>
+    <div class="form-group">
+      <label>Roles</label>
+      <div>
+        {% for r in available_roles %}
+        <label class="role-checkbox"><input type="checkbox" name="roles" value="{{ r }}" {% if r == 'ops' %}checked{% endif %}/> {{ r }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <button class="btn btn-primary btn-sm">Create</button>
+    <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('new-form').style.display='none'">Cancel</button>
+  </form>
+</div>
+
+<div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden">
+  <div class="user-row" style="background:var(--surface-2);font-family:'IBM Plex Mono',monospace;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-dim)">
+    <div>Name</div><div>Email</div><div>Roles</div><div>Phone</div><div></div>
+  </div>
+  {% for user in users %}
+  <div class="user-row">
+    <div style="font-weight:500">
+      {{ user.name }}{% if user.id == current_user.id %} <span class="dim mono" style="font-size:0.72rem">(you)</span>{% endif %}
+    </div>
+    <div class="mono dim" style="font-size:0.78rem">{{ user.email }}</div>
+    <div>
+      {% for r in user.roles_list %}<span class="role-badge role-{{ r }}">{{ r }}</span>{% endfor %}
+    </div>
+    <div class="mono">{{ user.phone or '—' }}</div>
+    <div>
+      <button class="btn btn-ghost btn-sm" onclick="toggleEdit({{ user.id }})">Edit</button>
+    </div>
+  </div>
+  <!-- Edit form (hidden by default) -->
+  <div id="edit-{{ user.id }}" style="display:none;padding:1rem;background:var(--surface-2);border-bottom:1px solid var(--border)">
+    <form method="POST" action="{{ url_for('edit_user', user_id=user.id) }}">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
+        <div class="form-group"><label>Name</label><input name="name" value="{{ user.name }}" required/></div>
+        <div class="form-group"><label>Phone</label><input name="phone" value="{{ user.phone or '' }}" placeholder="+91XXXXXXXXXX"/></div>
+      </div>
+      <div class="form-group">
+        <label>Roles</label>
+        <div>
+          {% for r in available_roles %}
+          <label class="role-checkbox"><input type="checkbox" name="roles" value="{{ r }}" {% if r in user.roles_list %}checked{% endif %}/> {{ r }}</label>
+          {% endfor %}
+        </div>
+      </div>
+      <div style="display:flex;gap:0.4rem">
+        <button class="btn btn-primary btn-sm">Save</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="toggleEdit({{ user.id }})">Cancel</button>
+        {% if user.id != current_user.id %}
+        <form method="POST" action="{{ url_for('delete_user_route', user_id=user.id) }}" style="display:inline" onsubmit="return confirm('Delete {{ user.name }}?')">
+          <button class="btn btn-danger btn-sm">Delete</button>
+        </form>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+
+<div style="margin-top:1rem;padding:0.75rem 1rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:0.78rem;color:var(--text-dim)">
+  <strong>Role behaviour:</strong>
+  • <strong>ops</strong> receive breach risk alerts ·
+  • <strong>qc</strong> receive rollback alerts and can rollback orders ·
+  • <strong>lab</strong> advance cutting/coating/fitting stages ·
+  • <strong>dispatch</strong> ship orders ·
+  • <strong>admin</strong> receive all alerts and can do everything
+</div>
+
+<script>
+function toggleEdit(id){
+  const el = document.getElementById('edit-' + id);
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+</script>
+{% endblock %}

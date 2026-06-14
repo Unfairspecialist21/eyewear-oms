@@ -51,9 +51,17 @@ class User(UserMixin, db.Model):
     name     = db.Column(db.String(100), nullable=False)
     email    = db.Column(db.String(150), unique=True, nullable=False)
     password = db.Column(db.String(200), nullable=False)
-    role     = db.Column(db.String(20), default='ops')  # admin, ops, lab, qc, dispatch
+    role     = db.Column(db.String(100), default='ops')  # comma-separated: ops,lab,qc,dispatch,admin
     phone    = db.Column(db.String(20), nullable=True)
     is_admin = db.Column(db.Boolean, default=False)
+
+    @property
+    def roles_list(self):
+        if not self.role: return []
+        return [r.strip() for r in self.role.split(',') if r.strip()]
+
+    def has_role(self, r):
+        return r in self.roles_list or self.is_admin
 
 class Lens(db.Model):
     """Inventory SKU — represents a physical lens type kept in Bangalore."""
@@ -174,6 +182,16 @@ def send_whatsapp(to_number, message):
         except Exception as e:
             print(f'WhatsApp error: {e}')
     threading.Thread(target=_send, daemon=True).start()
+
+def notify_role(role, message):
+    """Send WhatsApp to all users who have the given role (or admin)."""
+    users = User.query.all()
+    sent = 0
+    for u in users:
+        if u.phone and (role in u.roles_list or u.is_admin):
+            send_whatsapp(u.phone, message)
+            sent += 1
+    return sent
 
 # ─── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -484,25 +502,27 @@ def advance_stage(order_id):
 
     # Backward = QC or admin only, must have notes
     if is_backward:
-        if current_user.role not in ('qc', 'admin') and not current_user.is_admin:
+        if not (current_user.has_role('qc') or current_user.is_admin):
             return jsonify({'error': 'Only QC team or admin can rollback orders'}), 403
         if not notes:
             return jsonify({'error': 'Rollback requires a reason'}), 400
         # Reset SLA — push promised date forward
         order.promised_at = datetime.utcnow() + timedelta(hours=SLA_HOURS[order.fulfilment_path] * 0.5)
-        # Notify customer via WhatsApp
-        if order.customer_phone:
-            msg = (
-                f"Hi {order.customer_name}, your Lumio order {order.order_number} has had a minor "
-                f"setback in quality control. We've updated your new expected delivery to "
-                f"{order.promised_at.strftime('%d %b')}. We apologise for the inconvenience."
-            )
-            send_whatsapp(order.customer_phone, msg)
+        # Notify QC + admin via WhatsApp role-based
+        rollback_msg = (
+            f"🔴 Lumio rollback alert\n"
+            f"Order: {order.order_number} ({order.customer_name})\n"
+            f"Moved: {order.current_stage} → {new_stage}\n"
+            f"Reason: {notes}\n"
+            f"By: {current_user.name}\n"
+            f"New SLA: {order.promised_at.strftime('%d %b %H:%M')}"
+        )
+        notify_role('qc', rollback_msg)
     else:
         # Forward — role check
         required_role = STAGE_ROLES.get(order.current_stage)
         if required_role and required_role != 'system':
-            if current_user.role != required_role and current_user.role != 'admin' and not current_user.is_admin:
+            if not current_user.has_role(required_role) and not current_user.is_admin:
                 return jsonify({'error': f'Only {required_role} team can advance from this stage'}), 403
 
     old_stage = order.current_stage
@@ -582,6 +602,69 @@ def new_lens():
 
 
 # ─── ML model routes ──────────────────────────────────────────────────────────
+
+
+@app.route('/admin/users')
+@login_required
+def users_list():
+    if not current_user.is_admin:
+        flash('Admin only.', 'error')
+        return redirect(url_for('dashboard'))
+    all_users = User.query.order_by(User.name).all()
+    available_roles = ['admin', 'ops', 'lab', 'qc', 'dispatch']
+    return render_template('users.html', users=all_users, available_roles=available_roles)
+
+@app.route('/admin/users/<int:user_id>/edit', methods=['POST'])
+@login_required
+def edit_user(user_id):
+    if not current_user.is_admin:
+        return jsonify({'error': 'Admin only'}), 403
+    user = User.query.get_or_404(user_id)
+    user.name = request.form.get('name', user.name).strip()
+    user.phone = request.form.get('phone', '').strip() or None
+    selected_roles = request.form.getlist('roles')
+    user.role = ','.join(selected_roles) if selected_roles else 'ops'
+    user.is_admin = 'admin' in selected_roles
+    db.session.commit()
+    flash(f'Updated {user.name}', 'success')
+    return redirect(url_for('users_list'))
+
+@app.route('/admin/users/<int:user_id>/delete', methods=['POST'])
+@login_required
+def delete_user_route(user_id):
+    if not current_user.is_admin:
+        return 'Admin only', 403
+    if user_id == current_user.id:
+        flash('Cannot delete yourself', 'error')
+        return redirect(url_for('users_list'))
+    user = User.query.get_or_404(user_id)
+    db.session.delete(user)
+    db.session.commit()
+    flash(f'Deleted {user.name}', 'success')
+    return redirect(url_for('users_list'))
+
+@app.route('/admin/users/new', methods=['POST'])
+@login_required
+def new_user():
+    if not current_user.is_admin:
+        return 'Admin only', 403
+    name = request.form['name'].strip()
+    email = request.form['email'].strip().lower()
+    if User.query.filter_by(email=email).first():
+        flash('Email already exists', 'error')
+        return redirect(url_for('users_list'))
+    selected_roles = request.form.getlist('roles') or ['ops']
+    user = User(
+        name=name, email=email,
+        password=generate_password_hash(request.form.get('password', 'lumio123')),
+        role=','.join(selected_roles),
+        phone=request.form.get('phone', '').strip() or None,
+        is_admin='admin' in selected_roles
+    )
+    db.session.add(user)
+    db.session.commit()
+    flash(f'Created {user.name}', 'success')
+    return redirect(url_for('users_list'))
 
 # ─── ML helpers ───────────────────────────────────────────────────────────────
 import pickle
@@ -700,12 +783,10 @@ def train_model_endpoint():
         return f'Training error: {type(e).__name__}: {str(e)}'
 
 @app.route('/admin/refresh-predictions')
+@login_required
 def refresh_predictions():
-    # Allow access via secret token for cron jobs, OR logged-in admin
-    token = request.args.get('key', '')
-    if token != 'lumio-cron-2026-secret':
-        if not current_user.is_authenticated or not current_user.is_admin:
-            return 'Unauthorized', 403
+    if not current_user.is_admin:
+        return 'Admin only', 403
     active = Order.query.filter(Order.current_stage != 'delivered').all()
     high_risk = []
     for order in active:
@@ -715,12 +796,12 @@ def refresh_predictions():
             high_risk.append((order, reasons))
             order.breach_alerted = True
     db.session.commit()
-    # Fire WhatsApp alerts for newly high-risk
+    # Fire role-based WhatsApp alerts for newly high-risk
+    sent_total = 0
     for order, reasons in high_risk:
-        if current_user.phone:
-            msg = f"⚠ Lumio Alert: Order {order.order_number} at {order.breach_risk}% breach risk. Reasons: {'; '.join(reasons)}"
-            send_whatsapp(current_user.phone, msg)
-    return f'✓ Refreshed {len(active)} orders. {len(high_risk)} new high-risk alerts.'
+        msg = f"⚠ Lumio breach risk\nOrder: {order.order_number} ({order.customer_name})\nRisk: {order.breach_risk}%\nStage: {order.current_stage}\nReasons: {'; '.join(reasons)}"
+        sent_total += notify_role('ops', msg)
+    return f'✓ Refreshed {len(active)} orders. {len(high_risk)} new high-risk orders. {sent_total} WhatsApp messages sent.'
 
 
 
@@ -797,15 +878,7 @@ def order_risk(order_id):
     order.breach_risk = risk
     db.session.commit()
     return jsonify({'risk': risk, 'reasons': reasons})
-@app.route('/admin/set-my-phone/<phone>')
-@login_required
-def set_my_phone(phone):
-    if not phone.startswith('+'):
-        return 'Phone must start with + and country code (e.g. +919876543210)'
-    current_user.phone = phone
-    db.session.commit()
-    return f'✓ Your phone set to {phone}. WhatsApp alerts will go here.'
-    
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()

@@ -87,6 +87,7 @@
       <a href="{{ url_for('dashboard') }}">Dashboard</a>
       <a href="{{ url_for('inventory') }}">Inventory</a>
       <a href="{{ url_for('metrics') }}">Metrics</a>
+      {% if current_user.is_admin %}<a href="{{ url_for('users_list') }}">Users</a>{% endif %}
       <a href="{{ url_for('new_order') }}">New Order</a>
     </div>
   </div>
