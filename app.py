@@ -517,7 +517,8 @@ def advance_stage(order_id):
             f"By: {current_user.name}\n"
             f"New SLA: {order.promised_at.strftime('%d %b %H:%M')}"
         )
-        notify_role('qc', rollback_msg)
+        notify_role('lab', rollback_msg)
+        notify_role('ops', rollback_msg)
     else:
         # Forward — role check
         required_role = STAGE_ROLES.get(order.current_stage)
