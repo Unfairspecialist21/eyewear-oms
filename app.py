@@ -122,6 +122,16 @@ class StageTransition(db.Model):
     user_id     = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     notes       = db.Column(db.Text, nullable=True)
 
+
+class ModelStore(db.Model):
+    """Persistent model storage — survives redeploys."""
+    id           = db.Column(db.Integer, primary_key=True)
+    name         = db.Column(db.String(50), unique=True, nullable=False)
+    blob         = db.Column(db.LargeBinary, nullable=False)
+    features     = db.Column(db.Text, nullable=False)
+    metadata_json = db.Column(db.Text)
+    created_at   = db.Column(db.DateTime, default=datetime.utcnow)
+
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
@@ -427,11 +437,37 @@ def _order_features(order, current_stage=None, hours_in_stage=None, now=None):
     }
 
 def _load_model():
-    if not os.path.exists(MODEL_PATH):
+    """Load model from DB (persistent across redeploys)."""
+    try:
+        rec = ModelStore.query.filter_by(name='breach_predictor').first()
+        if not rec:
+            return None, None
+        import json
+        model = pickle.loads(rec.blob)
+        features = json.loads(rec.features)
+        return model, features
+    except Exception as e:
+        print(f'Model load error: {e}')
         return None, None
-    with open(MODEL_PATH, 'rb') as f:
-        d = pickle.load(f)
-    return d['model'], d['features']
+
+def _save_model(model, features, metadata=None):
+    """Save model to DB."""
+    import json
+    blob = pickle.dumps(model)
+    rec = ModelStore.query.filter_by(name='breach_predictor').first()
+    if rec:
+        rec.blob = blob
+        rec.features = json.dumps(features)
+        rec.metadata_json = json.dumps(metadata or {})
+        rec.created_at = datetime.utcnow()
+    else:
+        rec = ModelStore(
+            name='breach_predictor', blob=blob,
+            features=json.dumps(features),
+            metadata_json=json.dumps(metadata or {})
+        )
+        db.session.add(rec)
+    db.session.commit()
 
 def predict_risk(order):
     import pandas as pd
@@ -486,9 +522,8 @@ def train_model_endpoint():
         y = df['label']
         model = RandomForestClassifier(n_estimators=100, max_depth=10, min_samples_leaf=5, class_weight='balanced', random_state=42, n_jobs=-1)
         model.fit(X, y)
-        with open(MODEL_PATH, 'wb') as f:
-            pickle.dump({'model': model, 'features': list(X.columns)}, f)
-        return f'✓ Model trained on {len(rows)} rows. Breach rate: {int(y.mean()*100)}%. Now visit /admin/refresh-predictions.'
+        _save_model(model, list(X.columns), {'rows': len(rows), 'breach_rate': float(y.mean())})
+        return f'✓ Model trained on {len(rows)} rows. Breach rate: {int(y.mean()*100)}%. Saved to DB. Now visit /admin/refresh-predictions.'
     except Exception as e:
         return f'Training error: {type(e).__name__}: {str(e)}'
 
@@ -513,6 +548,39 @@ def refresh_predictions():
             send_whatsapp(current_user.phone, msg)
     return f'✓ Refreshed {len(active)} orders. {len(high_risk)} new high-risk alerts.'
 
+
+
+@app.route('/inventory/restocking')
+@login_required
+def restocking_ui():
+    """UI page for restocking suggestions."""
+    from collections import Counter
+    sixty_days_ago = datetime.utcnow() - timedelta(days=60)
+    recent_orders = Order.query.filter(Order.placed_at >= sixty_days_ago).all()
+    demand = Counter()
+    for o in recent_orders:
+        demand[(o.power_sph, o.index, o.coating, o.material)] += 1
+    suggestions = []
+    for (sph, idx, coat, mat), count in demand.most_common(40):
+        lens = Lens.query.filter_by(power_sph=sph, index=idx, coating=coat, material=mat).first()
+        monthly = count / 2
+        if lens:
+            if lens.stock_qty < monthly * 1.5:
+                rec = int(max(monthly * 2 - lens.stock_qty, 10))
+                suggestions.append({
+                    'sku': lens.sku, 'current': lens.stock_qty,
+                    'monthly_demand': round(monthly, 1), 'recommend': rec,
+                    'reason': f'{count} orders in 60d, only {lens.stock_qty} in stock',
+                    'urgency': 'high' if lens.stock_qty == 0 else 'medium'
+                })
+        else:
+            suggestions.append({
+                'sku': f"{sph:+.2f}/{idx}/{coat}/{mat}", 'current': 0,
+                'monthly_demand': round(monthly, 1), 'recommend': int(max(monthly * 2, 5)),
+                'reason': f'{count} orders but SKU not stocked',
+                'urgency': 'high'
+            })
+    return render_template('restocking.html', suggestions=suggestions[:25])
 
 @app.route('/admin/restocking-suggestions')
 @login_required

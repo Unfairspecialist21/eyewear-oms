@@ -6,9 +6,12 @@
     <div class="page-title">Lens inventory</div>
     <div class="page-meta" style="margin-top:0.2rem">{{ lenses|length }} SKUs · {{ low_stock|length }} below reorder</div>
   </div>
-  {% if current_user.is_admin or current_user.role == 'admin' %}
-  <button onclick="document.getElementById('add-form').style.display='block'" class="btn btn-primary btn-sm">+ Add lens</button>
-  {% endif %}
+  <div style="display:flex;gap:0.5rem">
+    <a href="{{ url_for('restocking_ui') }}" class="btn btn-ghost btn-sm">✦ AI Restocking</a>
+    {% if current_user.is_admin or current_user.role == 'admin' %}
+    <button onclick="document.getElementById('add-form').style.display='block'" class="btn btn-primary btn-sm">+ Add lens</button>
+    {% endif %}
+  </div>
 </div>
 
 <div id="add-form" style="display:none" class="card">

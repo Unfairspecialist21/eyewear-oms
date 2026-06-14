@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %} — Restocking{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">AI restocking suggestions</div>
+    <div class="page-meta">Based on last 60 days of demand vs current stock</div>
+  </div>
+  <a href="{{ url_for('inventory') }}" class="btn btn-ghost btn-sm">← Inventory</a>
+</div>
+
+{% if suggestions %}
+<table>
+  <thead><tr><th>SKU</th><th>Current Stock</th><th>Monthly Demand</th><th>Recommend Order</th><th>Reason</th><th>Urgency</th></tr></thead>
+  <tbody>
+  {% for s in suggestions %}
+  <tr>
+    <td class="mono">{{ s.sku }}</td>
+    <td class="mono">{{ s.current }}</td>
+    <td class="mono dim">{{ s.monthly_demand }}/mo</td>
+    <td class="mono" style="font-weight:500;color:var(--accent)">+{{ s.recommend }}</td>
+    <td class="dim" style="font-size:0.78rem">{{ s.reason }}</td>
+    <td>{% if s.urgency == 'high' %}<span class="badge b-risk-high">HIGH</span>{% else %}<span class="badge b-risk-med">MED</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<div style="margin-top:1rem;font-size:0.78rem;color:var(--text-dim)">These suggestions analyze the actual order patterns in your database. Higher demand + lower stock = stronger recommendation to reorder.</div>
+{% else %}
+<div class="card" style="text-align:center;color:var(--text-dim)">No restocking needed — all SKUs are well stocked relative to recent demand.</div>
+{% endif %}
+{% endblock %}
