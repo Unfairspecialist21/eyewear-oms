@@ -4,22 +4,22 @@
 <div class="page-header">
   <div>
     <div class="page-title">{{ order.order_number }} — {{ order.customer_name }}</div>
-    <div class="page-meta" style="margin-top:0.2rem">{{ order.source }} · {{ order.store_location }} · placed {{ order.placed_at.strftime('%d %b %Y, %H:%M') }}</div>
+    <div class="page-meta">{{ order.source }} · {{ order.store_location }} · placed {{ order.placed_at.strftime('%d %b %Y, %H:%M') }}</div>
   </div>
   <div style="display:flex;gap:0.5rem;align-items:center">
-    <span class="badge badge-{{ order.fulfilment_path }}">Path {{ order.fulfilment_path }}</span>
-    {% if order.is_breached %}<span class="badge badge-breach">BREACHED</span>
-    {% elif order.breach_risk >= 60 %}<span class="badge badge-risk-high">Risk {{ order.breach_risk }}%</span>
-    {% elif order.breach_risk >= 30 %}<span class="badge badge-risk-med">Risk {{ order.breach_risk }}%</span>
+    {% if order.fulfilment_path=='A' %}<span class="badge b-instock">In-stock</span>{% else %}<span class="badge b-sourced">Sourced</span>{% endif %}
+    {% if order.is_breached %}<span class="badge b-risk-high">BREACHED</span>
+    {% elif order.breach_risk >= 60 %}<span class="badge b-risk-high">{{ order.breach_risk }}% risk</span>
+    {% elif order.breach_risk >= 30 %}<span class="badge b-risk-med">{{ order.breach_risk }}% risk</span>
+    {% else %}<span class="badge b-risk-low">{{ order.breach_risk }}% risk</span>
     {% endif %}
     <a href="{{ url_for('dashboard') }}" class="btn btn-ghost btn-sm">← Back</a>
   </div>
 </div>
 
-<div style="display:grid;grid-template-columns:1fr 1.5fr;gap:1rem">
-  <!-- Order details -->
+<div style="display:grid;grid-template-columns:1fr 1.4fr;gap:1rem">
   <div class="card">
-    <div style="font-family:var(--mono);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim);margin-bottom:0.8rem">Details</div>
+    <div class="section-title">Details</div>
     <table>
       <tr><td class="dim mono">Stage</td><td><b>{{ order.current_stage.replace('_',' ').upper() }}</b></td></tr>
       <tr><td class="dim mono">Lens</td><td class="mono">{{ '%+.2f'|format(order.power_sph) }} / {{ order.power_cyl }} / {{ order.index }}</td></tr>
@@ -27,18 +27,53 @@
       <tr><td class="dim mono">Material</td><td>{{ order.material }}</td></tr>
       <tr><td class="dim mono">Lens type</td><td>{{ order.lens_type }}</td></tr>
       <tr><td class="dim mono">Frame</td><td>{{ order.frame_model or '—' }}</td></tr>
-      <tr><td class="dim mono">Customer</td><td>{{ order.customer_name }}<br><span class="dim mono" style="font-size:0.75rem">{{ order.customer_phone }} · {{ order.customer_email }}</span></td></tr>
-      <tr><td class="dim mono">Promised</td><td class="mono">{{ order.promised_at.strftime('%d %b %Y, %H:%M') if order.promised_at else '—' }}</td></tr>
-      <tr><td class="dim mono">Hours left</td><td class="mono" style="color:{% if order.hours_remaining and order.hours_remaining < 24 %}var(--red){% elif order.hours_remaining and order.hours_remaining < 48 %}var(--amber){% else %}var(--green){% endif %}">{{ order.hours_remaining if order.hours_remaining is not none else '—' }}</td></tr>
+      <tr><td class="dim mono">Customer</td><td>{{ order.customer_name }}<br><span class="dim mono" style="font-size:0.72rem">{{ order.customer_phone }}</span></td></tr>
+      <tr><td class="dim mono">Promised</td><td class="mono">{{ order.promised_at.strftime('%d %b, %H:%M') if order.promised_at else '—' }}</td></tr>
+      <tr><td class="dim mono">Hours left</td><td class="mono" style="color:{% if order.hours_remaining is not none and order.hours_remaining < 24 %}var(--red){% elif order.hours_remaining is not none and order.hours_remaining < 48 %}var(--amber){% else %}var(--green){% endif %}">{{ order.hours_remaining if order.hours_remaining is not none else '—' }}h</td></tr>
     </table>
+
+    <!-- Stage advancement controls -->
+    <div style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--border)">
+      <div class="section-title">Stage actions</div>
+      {% set cur_idx = stages.index(order.current_stage) %}
+      <div style="display:flex;flex-wrap:wrap;gap:0.4rem">
+        {% if cur_idx < stages|length - 1 %}
+        <button class="btn btn-primary btn-sm" onclick="advance('{{ stages[cur_idx+1] }}', false)">→ Advance to {{ stages[cur_idx+1] }}</button>
+        {% endif %}
+        {% if cur_idx > 0 and (current_user.role in ('qc','admin') or current_user.is_admin) %}
+        <button class="btn btn-danger btn-sm" onclick="showRollback()">← Rollback</button>
+        {% endif %}
+        <button class="btn btn-ghost btn-sm" onclick="recalcRisk()">↻ Recalc risk</button>
+      </div>
+
+      <div id="rollback-form" style="display:none;margin-top:1rem;padding:0.75rem;background:var(--surface-2);border:1px solid var(--red);border-radius:4px">
+        <div class="section-title" style="color:var(--red)">Rollback (requires reason)</div>
+        <select id="rollback-stage" style="margin-bottom:0.5rem">
+          {% for s in stages[:cur_idx] %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+        </select>
+        <select id="rollback-preset" onchange="setReason(this.value)" style="margin-bottom:0.5rem">
+          <option value="">-- pick a reason --</option>
+          <option value="QC failure: lens defect">QC failure — lens defect</option>
+          <option value="QC failure: coating issue">QC failure — coating issue</option>
+          <option value="QC failure: fitting problem">QC failure — fitting problem</option>
+          <option value="Customer requested change">Customer requested change</option>
+          <option value="Wrong stage clicked accidentally">Wrong stage clicked accidentally</option>
+          <option value="Other">Other (specify below)</option>
+        </select>
+        <textarea id="rollback-notes" placeholder="Additional notes..." rows="2" style="margin-bottom:0.5rem"></textarea>
+        <div style="display:flex;gap:0.4rem">
+          <button class="btn btn-danger btn-sm" onclick="executeRollback()">Confirm rollback</button>
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('rollback-form').style.display='none'">Cancel</button>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <!-- Timeline -->
   <div class="card">
-    <div style="font-family:var(--mono);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim);margin-bottom:0.8rem">Stage timeline</div>
+    <div class="section-title">Stage timeline</div>
     {% for t in transitions %}
     <div style="display:flex;align-items:flex-start;gap:0.6rem;padding:0.5rem 0;border-bottom:1px solid var(--border)">
-      <div style="width:6px;height:6px;border-radius:50%;background:var(--accent);margin-top:0.4rem;flex-shrink:0"></div>
+      <div style="width:6px;height:6px;border-radius:50%;background:{% if t.notes and '[backward]' in t.notes %}var(--red){% else %}var(--accent){% endif %};margin-top:0.4rem;flex-shrink:0"></div>
       <div style="flex:1">
         <div style="display:flex;justify-content:space-between;font-size:0.82rem">
           <span><b class="mono">{{ t.from_stage or 'start' }}</b> → <b class="mono">{{ t.to_stage }}</b></span>
@@ -50,4 +85,48 @@
     {% endfor %}
   </div>
 </div>
+
+<script>
+const ORDER_ID = {{ order.id }};
+
+function advance(toStage, isBackward){
+  fetch(`/order/${ORDER_ID}/advance`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({to_stage: toStage})
+  }).then(r=>r.json()).then(d=>{
+    if(d.error) alert(d.error);
+    else location.reload();
+  });
+}
+
+function showRollback(){
+  document.getElementById('rollback-form').style.display='block';
+}
+
+function setReason(val){
+  if(val && val !== 'Other'){
+    document.getElementById('rollback-notes').value = val;
+  }
+}
+
+function executeRollback(){
+  const stage = document.getElementById('rollback-stage').value;
+  const notes = document.getElementById('rollback-notes').value.trim();
+  if(!notes){ alert('Reason required'); return; }
+  fetch(`/order/${ORDER_ID}/advance`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({to_stage: stage, notes: notes})
+  }).then(r=>r.json()).then(d=>{
+    if(d.error) alert(d.error);
+    else location.reload();
+  });
+}
+
+function recalcRisk(){
+  fetch(`/order/${ORDER_ID}/risk`).then(r=>r.json()).then(d=>{
+    alert(`Risk: ${d.risk}%\n\nReasons:\n${d.reasons.map(r=>'• '+r).join('\n')}`);
+    location.reload();
+  });
+}
+</script>
 {% endblock %}

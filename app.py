@@ -216,8 +216,8 @@ def logout():
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    orders_by_stage = {stage: [] for stage in STAGES}
     all_orders = Order.query.filter(Order.current_stage != 'delivered').all()
+    orders_by_stage = {stage: [] for stage in STAGES}
     for order in all_orders:
         orders_by_stage[order.current_stage].append(order)
 
@@ -228,7 +228,36 @@ def dashboard():
         'breached':     sum(1 for o in all_orders if o.is_breached),
         'at_risk':      sum(1 for o in all_orders if o.breach_risk >= 60 and not o.is_breached),
     }
-    return render_template('dashboard.html', orders_by_stage=orders_by_stage, stats=stats, stages=STAGES)
+
+    active_stage = request.args.get('stage')
+    q            = request.args.get('q', '').strip().lower()
+    path_f       = request.args.get('path', '')
+    store_f      = request.args.get('store', '')
+    risk_f       = request.args.get('risk', '')
+
+    filtered = all_orders
+    if active_stage:
+        filtered = [o for o in filtered if o.current_stage == active_stage]
+    if q:
+        filtered = [o for o in filtered if q in o.order_number.lower() or q in (o.customer_name or '').lower()]
+    if path_f:
+        filtered = [o for o in filtered if o.fulfilment_path == path_f]
+    if store_f:
+        filtered = [o for o in filtered if o.store_location == store_f]
+    if risk_f == 'high':
+        filtered = [o for o in filtered if o.breach_risk >= 60]
+    elif risk_f == 'med':
+        filtered = [o for o in filtered if 30 <= o.breach_risk < 60]
+    elif risk_f == 'low':
+        filtered = [o for o in filtered if o.breach_risk < 30]
+
+    # Sort by risk desc by default
+    filtered = sorted(filtered, key=lambda o: -o.breach_risk)
+
+    return render_template('dashboard.html',
+        orders_by_stage=orders_by_stage, stats=stats, stages=STAGES,
+        filtered_orders=filtered, active_stage=active_stage
+    )
 
 # ─── Order intake (public form) ────────────────────────────────────────────────
 
@@ -308,21 +337,36 @@ def advance_stage(order_id):
     if new_stage not in STAGES:
         return jsonify({'error': 'Invalid stage'}), 400
 
-    # Role check
-    required_role = STAGE_ROLES.get(order.current_stage)
-    if required_role and required_role != 'system':
-        if current_user.role != required_role and current_user.role != 'admin' and not current_user.is_admin:
-            return jsonify({'error': f'Only {required_role} team can advance from this stage'}), 403
+    old_idx = STAGES.index(order.current_stage)
+    new_idx = STAGES.index(new_stage)
+    is_backward = new_idx < old_idx
+
+    # Backward = QC or admin only, must have notes
+    if is_backward:
+        if current_user.role not in ('qc', 'admin') and not current_user.is_admin:
+            return jsonify({'error': 'Only QC team or admin can rollback orders'}), 403
+        if not notes:
+            return jsonify({'error': 'Rollback requires a reason'}), 400
+        # Reset SLA — push promised date forward
+        order.promised_at = datetime.utcnow() + timedelta(hours=SLA_HOURS[order.fulfilment_path] * 0.5)
+    else:
+        # Forward — role check
+        required_role = STAGE_ROLES.get(order.current_stage)
+        if required_role and required_role != 'system':
+            if current_user.role != required_role and current_user.role != 'admin' and not current_user.is_admin:
+                return jsonify({'error': f'Only {required_role} team can advance from this stage'}), 403
 
     old_stage = order.current_stage
     order.current_stage = new_stage
-    log_transition(order, old_stage, new_stage, user_id=current_user.id, notes=notes)
+    direction = 'backward' if is_backward else 'forward'
+    full_notes = f'[{direction}] {notes}' if notes else f'[{direction}]'
+    log_transition(order, old_stage, new_stage, user_id=current_user.id, notes=full_notes)
 
     if new_stage == 'delivered':
         order.delivered_at = datetime.utcnow()
 
     db.session.commit()
-    return jsonify({'success': True})
+    return jsonify({'success': True, 'direction': direction})
 
 # ─── Inventory ─────────────────────────────────────────────────────────────────
 
@@ -357,17 +401,65 @@ def new_lens():
 
 # ─── ML model routes ──────────────────────────────────────────────────────────
 
+# ─── ML helpers ───────────────────────────────────────────────────────────────
+import pickle
+MODEL_PATH = '/tmp/lumio_model.pkl'
+
+def _order_features(order, current_stage=None, hours_in_stage=None, now=None):
+    if now is None: now = datetime.utcnow()
+    if current_stage is None: current_stage = order.current_stage
+    hours_placed = (now - order.placed_at).total_seconds() / 3600
+    if hours_in_stage is None:
+        last_t = StageTransition.query.filter_by(order_id=order.id, to_stage=current_stage).order_by(StageTransition.transitioned_at.desc()).first()
+        hours_in_stage = (now - last_t.transitioned_at).total_seconds() / 3600 if last_t else 0
+    return {
+        'power_sph_abs':   abs(order.power_sph),
+        'index_v':         order.index,
+        'is_premium_lens': 1 if order.index >= 1.67 else 0,
+        'is_photochromic': 1 if order.coating == 'photochromic' else 0,
+        'is_high_index_mat': 1 if order.material == 'high-index' else 0,
+        'path_b':          1 if order.fulfilment_path == 'B' else 0,
+        'stage_int':       STAGES.index(current_stage) if current_stage in STAGES else 0,
+        'hours_placed':    hours_placed,
+        'hours_in_stage':  hours_in_stage,
+        'day_of_week':     order.placed_at.weekday(),
+        'hour_of_day':     order.placed_at.hour,
+    }
+
+def _load_model():
+    if not os.path.exists(MODEL_PATH):
+        return None, None
+    with open(MODEL_PATH, 'rb') as f:
+        d = pickle.load(f)
+    return d['model'], d['features']
+
+def predict_risk(order):
+    import pandas as pd
+    model, feats = _load_model()
+    if model is None:
+        return 0, ['Model not trained']
+    X = pd.DataFrame([_order_features(order)])[feats]
+    prob = float(model.predict_proba(X)[0][1])
+    risk = int(prob * 100)
+    f = _order_features(order)
+    reasons = []
+    if f['path_b']: reasons.append("Sourced from supplier (slower path)")
+    if f['is_premium_lens']: reasons.append(f"Premium {order.index} index lens")
+    if f['is_photochromic']: reasons.append("Photochromic coating adds time")
+    if f['hours_in_stage'] > 12: reasons.append(f"In {order.current_stage} for {int(f['hours_in_stage'])}h")
+    if f['hours_placed'] > SLA_HOURS[order.fulfilment_path] * 0.6: reasons.append("Past 60% of SLA")
+    if f['day_of_week'] >= 4: reasons.append("Friday/weekend order")
+    if not reasons: reasons.append("Multiple soft signals")
+    return risk, reasons[:3]
+
 @app.route('/admin/train-model')
 @login_required
 def train_model_endpoint():
     if not current_user.is_admin:
         return 'Admin only', 403
     try:
-        import os, pickle
         import pandas as pd
         from sklearn.ensemble import RandomForestClassifier
-        
-        # Build dataset inline so it shares app context
         rows = []
         delivered = Order.query.filter_by(current_stage='delivered').all()
         for order in delivered:
@@ -377,58 +469,89 @@ def train_model_endpoint():
             breached = 1 if actual > sla_h else 0
             transitions = StageTransition.query.filter_by(order_id=order.id).order_by(StageTransition.transitioned_at).all()
             if len(transitions) < 2: continue
-            for t in transitions[:-1]:
-                rows.append({
-                    'power_sph_abs': abs(order.power_sph),
-                    'index_v': order.index,
-                    'is_premium_lens': 1 if order.index >= 1.67 else 0,
-                    'is_photochromic': 1 if order.coating == 'photochromic' else 0,
-                    'path_b': 1 if order.fulfilment_path == 'B' else 0,
-                    'stage_int': STAGES.index(t.to_stage) if t.to_stage in STAGES else 0,
-                    'day_of_week': order.placed_at.weekday(),
-                    'label': breached
-                })
-        
+            for i, t in enumerate(transitions[:-1]):
+                feats = _order_features(order, current_stage=t.to_stage, hours_in_stage=0, now=t.transitioned_at)
+                feats['label'] = breached
+                rows.append(feats)
+                next_t = transitions[i+1]
+                mid_t = t.transitioned_at + (next_t.transitioned_at - t.transitioned_at) * 0.75
+                hrs = (mid_t - t.transitioned_at).total_seconds() / 3600
+                feats_mid = _order_features(order, current_stage=t.to_stage, hours_in_stage=hrs, now=mid_t)
+                feats_mid['label'] = breached
+                rows.append(feats_mid)
         if len(rows) < 100:
             return f'Only {len(rows)} training rows. Need 100+.'
-        
         df = pd.DataFrame(rows)
         X = df.drop('label', axis=1)
         y = df['label']
-        
-        model = RandomForestClassifier(n_estimators=100, max_depth=10, class_weight='balanced', random_state=42)
+        model = RandomForestClassifier(n_estimators=100, max_depth=10, min_samples_leaf=5, class_weight='balanced', random_state=42, n_jobs=-1)
         model.fit(X, y)
-        
-        with open('/tmp/lumio_model.pkl', 'wb') as f:
+        with open(MODEL_PATH, 'wb') as f:
             pickle.dump({'model': model, 'features': list(X.columns)}, f)
-        
-        return f'✓ Trained on {len(rows)} rows. Model saved.'
+        return f'✓ Model trained on {len(rows)} rows. Breach rate: {int(y.mean()*100)}%. Now visit /admin/refresh-predictions.'
     except Exception as e:
-        return f'Training error: {str(e)}'
+        return f'Training error: {type(e).__name__}: {str(e)}'
+
+@app.route('/admin/refresh-predictions')
+@login_required
 def refresh_predictions():
-    """Recalculate breach_risk for all active orders using current model."""
     if not current_user.is_admin:
         return 'Admin only', 403
-    try:
-        from scripts.train_model import predict_breach_risk
-        active = Order.query.filter(Order.current_stage != 'delivered').all()
-        updated = 0
-        for order in active:
-            risk, _ = predict_breach_risk(order)
-            order.breach_risk = risk
-            updated += 1
-        db.session.commit()
-        return f'✓ Refreshed predictions for {updated} active orders.'
-    except Exception as e:
-        return f'Prediction error: {str(e)}'
+    active = Order.query.filter(Order.current_stage != 'delivered').all()
+    high_risk = []
+    for order in active:
+        risk, reasons = predict_risk(order)
+        order.breach_risk = risk
+        if risk >= 60 and not order.breach_alerted:
+            high_risk.append((order, reasons))
+            order.breach_alerted = True
+    db.session.commit()
+    # Fire WhatsApp alerts for newly high-risk
+    for order, reasons in high_risk:
+        if current_user.phone:
+            msg = f"⚠ Lumio Alert: Order {order.order_number} at {order.breach_risk}% breach risk. Reasons: {'; '.join(reasons)}"
+            send_whatsapp(current_user.phone, msg)
+    return f'✓ Refreshed {len(active)} orders. {len(high_risk)} new high-risk alerts.'
+
+
+@app.route('/admin/restocking-suggestions')
+@login_required
+def restocking_suggestions():
+    """Analyze last 60 days of demand vs current stock, suggest reorders."""
+    from collections import Counter
+    if not current_user.is_admin:
+        return jsonify({'error': 'Admin only'}), 403
+    sixty_days_ago = datetime.utcnow() - timedelta(days=60)
+    recent_orders = Order.query.filter(Order.placed_at >= sixty_days_ago).all()
+    demand = Counter()
+    for o in recent_orders:
+        demand[(o.power_sph, o.index, o.coating, o.material)] += 1
+    suggestions = []
+    for (sph, idx, coat, mat), count in demand.most_common(30):
+        lens = Lens.query.filter_by(power_sph=sph, index=idx, coating=coat, material=mat).first()
+        if lens:
+            # Suggest reorder if avg monthly demand > current stock / 2
+            monthly = count / 2
+            if lens.stock_qty < monthly * 1.5:
+                recommended = int(max(monthly * 2 - lens.stock_qty, 10))
+                suggestions.append({
+                    'sku': lens.sku, 'current': lens.stock_qty,
+                    'monthly_demand': monthly, 'recommend': recommended,
+                    'reason': f'{count} orders in last 60 days vs {lens.stock_qty} in stock'
+                })
+        else:
+            suggestions.append({
+                'sku': f"{sph:+.2f}/{idx}/{coat}/{mat}", 'current': 0,
+                'monthly_demand': count / 2, 'recommend': int(max(count / 2, 5)),
+                'reason': f'{count} orders but no SKU exists'
+            })
+    return jsonify({'suggestions': suggestions[:20]})
 
 @app.route('/order/<int:order_id>/risk')
 @login_required
 def order_risk(order_id):
-    """Get current risk + reasons for a specific order."""
-    from scripts.train_model import predict_breach_risk
     order = Order.query.get_or_404(order_id)
-    risk, reasons = predict_breach_risk(order)
+    risk, reasons = predict_risk(order)
     order.breach_risk = risk
     db.session.commit()
     return jsonify({'risk': risk, 'reasons': reasons})
